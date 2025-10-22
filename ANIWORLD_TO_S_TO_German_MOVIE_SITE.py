@@ -6,6 +6,7 @@ from urllib.parse import urljoin, urlparse
 import json
 import time
 import os
+import tempfile
 
 # Set page configuration
 st.set_page_config(
@@ -336,66 +337,93 @@ class AniworldScraper:
         
         st.dataframe(episode_data, use_container_width=True)
         
-        # Step 3: Process redirect URLs
-        if st.button("🚀 Extract Redirect URLs", key=f"redirect_{season_number}"):
-            with st.spinner("Extracting redirect URLs for all episodes..."):
-                redirect_results = []
-                progress_bar = st.progress(0)
-                
-                for i, episode in enumerate(episodes):
-                    episode_url = episode['url']
-                    episode_num = episode['episode_number']
+        # Step 3: Download episode data
+        episode_json_data = {
+            "season": int(season_number),
+            "episodes": episodes
+        }
+        
+        episode_json_str = json.dumps(episode_json_data, ensure_ascii=False, indent=2)
+        
+        st.download_button(
+            label=f"📥 Download Season {season_number} Episodes JSON",
+            data=episode_json_str,
+            file_name=f"season_{season_number}_episodes.json",
+            mime="application/json",
+            key=f"download_episodes_{season_number}"
+        )
+        
+        # Step 4: Process redirect URLs
+        st.subheader("🔗 Extract Redirect URLs")
+        
+        if st.button("🚀 Extract Redirect URLs", key=f"redirect_{season_number}", type="primary"):
+            redirect_container = st.container()
+            
+            with redirect_container:
+                with st.spinner("Extracting redirect URLs for all episodes..."):
+                    redirect_results = []
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                     
-                    # Update progress
-                    progress = (i + 1) / len(episodes)
-                    progress_bar.progress(progress)
+                    for i, episode in enumerate(episodes):
+                        episode_url = episode['url']
+                        episode_num = episode['episode_number']
+                        
+                        # Update progress
+                        progress = (i + 1) / len(episodes)
+                        progress_bar.progress(progress)
+                        status_text.text(f"Processing Episode {episode_num} ({i+1}/{len(episodes)})")
+                        
+                        # Extract redirect URLs
+                        redirect_urls = self.extract_redirect_urls_for_episode(episode_url, episode)
+                        
+                        # Create custom format entry
+                        episode_data = {
+                            "main_title": anime_info["main_title"],
+                            "tmdb_id": anime_info["tmdb_id"],
+                            "imdb_id": anime_info["imdb_id"],
+                            "ORIGINAL_serial number": episode_num,
+                            "Sesson_number": season_number,
+                            "episode_number": episode_num,
+                            "original_url": episode_url,
+                            "german_title": episode.get('german', ''),
+                            "english_title": episode.get('english', '')
+                        }
+                        
+                        # Add redirect URLs
+                        episode_data.update(redirect_urls)
+                        redirect_results.append(episode_data)
+                        
+                        # Add delay to be respectful to the server
+                        time.sleep(1)
                     
-                    # Extract redirect URLs
-                    redirect_urls = self.extract_redirect_urls_for_episode(episode_url, episode)
+                    progress_bar.empty()
+                    status_text.empty()
                     
-                    # Create custom format entry
-                    episode_data = {
-                        "main_title": anime_info["main_title"],
-                        "tmdb_id": anime_info["tmdb_id"],
-                        "imdb_id": anime_info["imdb_id"],
-                        "ORIGINAL_serial number": episode_num,
-                        "Sesson_number": season_number,
-                        "episode_number": episode_num,
-                        "original_url": episode_url,
-                        "german_title": episode.get('german', ''),
-                        "english_title": episode.get('english', '')
-                    }
+                    # Display success message
+                    st.success(f"✅ Successfully extracted redirect URLs for {len(redirect_results)} episodes!")
                     
-                    # Add redirect URLs
-                    episode_data.update(redirect_urls)
-                    redirect_results.append(episode_data)
+                    # Display sample of the data
+                    with st.expander("📋 Preview Redirect Data (First Episode)"):
+                        if redirect_results:
+                            st.json(redirect_results[0])
                     
-                    # Add delay to be respectful to the server
-                    time.sleep(1)
-                
-                progress_bar.empty()
-                
-                # Save redirect results
-                redirect_filename = f"season_{season_number}_redirects_custom.json"
-                with open(redirect_filename, 'w', encoding='utf-8') as f:
-                    json.dump(redirect_results, f, ensure_ascii=False, indent=4)
-                
-                # Display download button for redirect JSON
-                with open(redirect_filename, "r", encoding="utf-8") as file:
+                    # Create download button for redirect JSON
+                    redirect_json_str = json.dumps(redirect_results, ensure_ascii=False, indent=4)
+                    
                     st.download_button(
                         label=f"📥 Download Season {season_number} Redirects JSON",
-                        data=file.read(),
-                        file_name=redirect_filename,
+                        data=redirect_json_str,
+                        file_name=f"season_{season_number}_redirects_custom.json",
                         mime="application/json",
-                        key=f"download_redirect_{season_number}"
+                        key=f"download_redirect_{season_number}",
+                        type="primary"
                     )
+                    
+                    # Also save to session state for later access
+                    st.session_state[f'redirect_data_{season_number}'] = redirect_results
+                    st.session_state[f'redirect_json_{season_number}'] = redirect_json_str
                 
-                # Display sample of the data
-                st.subheader("🎯 Sample Redirect Data")
-                if redirect_results:
-                    st.json(redirect_results[0])
-                
-                results['redirect_file'] = redirect_filename
                 results['redirect_data'] = redirect_results
             
         results['season_info'] = season_info
@@ -416,6 +444,10 @@ def main():
     - Extract redirect URLs
     - Export to JSON format
     """)
+    
+    # Initialize session state
+    if 'all_redirect_data' not in st.session_state:
+        st.session_state.all_redirect_data = {}
     
     # Main content
     st.title("🎬 Aniworld Anime Scraper")
@@ -458,23 +490,6 @@ def main():
                 if results:
                     st.success(f"✅ Successfully processed Season {results['season_info'].get('number', i+1)}")
                     
-                    # Display download button for episode data
-                    episode_filename = f"season_{results['season_info'].get('number', i+1)}_episodes.json"
-                    episode_data = {
-                        "season": int(results['season_info'].get('number', i+1)),
-                        "episodes": results['episodes']
-                    }
-                    
-                    # Create download button for episode data
-                    episode_json = json.dumps(episode_data, ensure_ascii=False, indent=2)
-                    st.download_button(
-                        label=f"📥 Download Season {results['season_info'].get('number', i+1)} Episodes JSON",
-                        data=episode_json,
-                        file_name=episode_filename,
-                        mime="application/json",
-                        key=f"download_episodes_{i}"
-                    )
-                    
             except Exception as e:
                 st.error(f"❌ Error processing {url}: {str(e)}")
         
@@ -491,6 +506,8 @@ def main():
         5. **Download Data**: Use the download buttons to save JSON files
         
         **URL Format**: `https://aniworld.to/anime/stream/SERIES_NAME/staffel-SEASON_NUMBER`
+        
+        **Important**: Make sure to click the "Extract Redirect URLs" button for each season you want redirect data for, then use the download button that appears to get the custom JSON format.
         """)
     
     # Example section
